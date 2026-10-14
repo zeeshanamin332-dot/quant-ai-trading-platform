@@ -103,7 +103,7 @@ with st.sidebar:
     fee_pct = st.number_input("Estimated fee per unit of turnover (%)", min_value=0.0, max_value=2.0, value=0.1, step=0.05)
     strategy = st.selectbox("Strategy to review", ["MACD crossover", "Bollinger Bands", "My strategy"])
     if strategy == "My strategy":
-        higher_timeframe = st.selectbox("Order-block timeframe", ["15m", "1h", "4h"], index=2, help="For true higher-timeframe confluence, choose an interval above your chart interval.")
+        higher_timeframe = st.selectbox("Order-block timeframe", ["15m", "1h", "4h", "1d"], index={"1h": 2, "4h": 3, "1d": 3}[timeframe], help="Choose an interval above the chart interval where possible. The app has no interval above 1d.")
         risk_reward_label = st.selectbox("Risk-to-reward", ["1:1", "1:2"], index=1)
         risk_reward = int(risk_reward_label.split(":")[1])
         swing_lookback = st.slider("Swing liquidity lookback", min_value=5, max_value=30, value=10, step=1)
