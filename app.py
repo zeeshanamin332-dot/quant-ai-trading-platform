@@ -5,6 +5,7 @@ import ccxt
 import plotly.graph_objects as go
 from backtest import run_backtest
 from my_strategy import add_my_strategy, simulate_my_trades
+from agents import ask_ai_agent, fetch_crypto_news, trades_to_context
 
 st.set_page_config(
     page_title="Quant AI Trading Platform",
@@ -100,7 +101,7 @@ with st.sidebar:
     st.header("Settings")
     symbol = st.selectbox("Crypto pair", ["BTC/USD", "ETH/USD", "SOL/USD", "BTC/USDT", "ETH/USDT"])
     timeframe = st.selectbox("Candle interval", ["1h", "4h", "1d"])
-    limit = st.slider("Number of candles", min_value=100, max_value=720, value=500, step=100)
+    limit = st.slider("Number of candles", min_value=100, max_value=5000, value=1000, step=100)
     fee_pct = st.number_input("Estimated fee per unit of turnover (%)", min_value=0.0, max_value=2.0, value=0.1, step=0.05)
     strategy = st.selectbox("Strategy to review", ["MACD crossover", "Bollinger Bands", "My strategy"])
     if strategy == "My strategy":
@@ -196,7 +197,7 @@ try:
         margin={"l": 10, "r": 20, "t": 50, "b": 10},
     )
     fig.update_yaxes(title_text="Price")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True, "modeBarButtonsToAdd": ["drawline", "drawrect", "eraseshape"]})
 
     if strategy == "My strategy":
         st.subheader("My strategy — projected trade levels and outcomes")
