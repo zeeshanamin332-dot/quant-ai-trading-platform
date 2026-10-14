@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import ccxt
+from backtest import run_backtest
 
 st.set_page_config(
     page_title="Quant AI Trading Platform",
@@ -92,33 +93,6 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     data["bb_position"] = data["bb_event"]
     return data
 
-def run_backtest(data: pd.DataFrame, position_col: str, fee_rate: float, bars_per_year: int):
-    result = data.copy()
-    # Signals formed on candle close are applied from the following candle.
-    result["position"] = result[position_col].shift(1).fillna(0)
-    result["market_return"] = result["close"].pct_change().fillna(0)
-    result["turnover"] = result["position"].diff().abs()
-    if len(result):
-        result.iloc[0, result.columns.get_loc("turnover")] = abs(result["position"].iloc[0])
-    result["turnover"] = result["turnover"].fillna(0)
-    result["fees"] = result["turnover"] * fee_rate
-    result["strategy_return"] = result["position"] * result["market_return"] - result["fees"]
-    result["equity"] = (1 + result["strategy_return"]).cumprod()
-    result["buy_hold"] = (1 + result["market_return"]).cumprod()
-    result["drawdown"] = result["equity"] / result["equity"].cummax() - 1
-
-    returns = result["strategy_return"]
-    vol = returns.std(ddof=1)
-    sharpe = np.sqrt(bars_per_year) * returns.mean() / vol if pd.notna(vol) and vol > 0 else np.nan
-    metrics = {
-        "Strategy return": f"{(result['equity'].iloc[-1] - 1) * 100:.2f}%",
-        "Buy & hold return": f"{(result['buy_hold'].iloc[-1] - 1) * 100:.2f}%",
-        "Maximum drawdown": f"{result['drawdown'].min() * 100:.2f}%",
-        "Estimated annualized Sharpe": f"{sharpe:.2f}" if pd.notna(sharpe) else "N/A",
-        "Position changes": f"{int(result['turnover'].gt(0).sum())}",
-        "Estimated fees (return units)": f"{result['fees'].sum():.4f}",
-    }
-    return result, metrics
 
 with st.sidebar:
     st.header("Settings")
