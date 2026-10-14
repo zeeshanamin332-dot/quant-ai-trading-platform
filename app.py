@@ -3,6 +3,7 @@ import pandas as pd
 import streamlit as st
 import ccxt
 from backtest import run_backtest
+from my_strategy import add_my_strategy
 
 st.set_page_config(
     page_title="Quant AI Trading Platform",
@@ -11,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("📈 Quant AI Trading Platform")
-st.caption("Crypto research dashboard • Historical candles • MACD • Bollinger Bands • Backtesting")
+st.caption("Crypto research dashboard • MACD • Bollinger Bands • Liquidity sweeps • Backtesting")
 st.warning(
     "Research only — this app does not place trades. Backtests are simulations, "
     "and past performance does not predict future results."
@@ -33,7 +34,7 @@ def fetch_candles(symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
 
     # Kraken can include the currently forming candle. Exclude it until its
     # full interval has elapsed so signals use completed candles only.
-    timeframe_seconds = {"1h": 3600, "4h": 4 * 3600, "1d": 24 * 3600}
+    timeframe_seconds = {"15m": 900, "1h": 3600, "4h": 4 * 3600, "1d": 24 * 3600}
     if timeframe not in timeframe_seconds:
         raise ValueError(f"Unsupported candle interval: {timeframe}")
     if not df.empty:
