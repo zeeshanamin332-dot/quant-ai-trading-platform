@@ -2,8 +2,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import ccxt
+import plotly.graph_objects as go
 from backtest import run_backtest
-from my_strategy import add_my_strategy
+from my_strategy import add_my_strategy, simulate_my_trades
 
 st.set_page_config(
     page_title="Quant AI Trading Platform",
@@ -155,27 +156,73 @@ try:
         "The currently forming candle is excluded from indicators and backtesting."
     )
 
-    st.subheader("Price and indicators")
-    price_chart = data[["close", "bb_mid", "bb_upper", "bb_lower"]].rename(
-        columns={"close": "Close", "bb_mid": "BB middle", "bb_upper": "BB upper", "bb_lower": "BB lower"}
-    )
+    st.subheader("Candlestick chart")
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=data.index, open=data["open"], high=data["high"], low=data["low"], close=data["close"],
+        name=f"{symbol} OHLC",
+    ))
+    if strategy == "Bollinger Bands":
+        for col, label in [("bb_mid", "BB middle"), ("bb_upper", "BB upper"), ("bb_lower", "BB lower")]:
+            fig.add_trace(go.Scatter(x=data.index, y=data[col], mode="lines", name=label, line={"width": 1}))
+    if strategy == "MACD crossover":
+        buys = data["macd_event"] > 0
+        sells = data["macd_event"] < 0
+        fig.add_trace(go.Scatter(x=data.index[buys], y=data.loc[buys, "low"] * 0.999, mode="markers", name="MACD buy", marker={"symbol": "triangle-up", "size": 11}))
+        fig.add_trace(go.Scatter(x=data.index[sells], y=data.loc[sells, "high"] * 1.001, mode="markers", name="MACD sell", marker={"symbol": "triangle-down", "size": 11}))
+    trades = pd.DataFrame()
     if strategy == "My strategy":
-        price_chart["BUY signal"] = data["low"].where(data["my_signal"] > 0)
-        price_chart["SELL signal"] = data["high"].where(data["my_signal"] < 0)
-    st.line_chart(price_chart, height=350)
+        buys = data["my_signal"] > 0
+        sells = data["my_signal"] < 0
+        fig.add_trace(go.Scatter(x=data.index[buys], y=data.loc[buys, "low"], mode="markers", name="BUY setup", marker={"symbol": "triangle-up", "size": 13, "color": "#16a34a"}))
+        fig.add_trace(go.Scatter(x=data.index[sells], y=data.loc[sells, "high"], mode="markers", name="SELL setup", marker={"symbol": "triangle-down", "size": 13, "color": "#dc2626"}))
+        trades = simulate_my_trades(data)
+        if not trades.empty:
+            entered = trades["Entry time"].notna()
+            fig.add_trace(go.Scatter(x=trades.loc[entered, "Entry time"], y=trades.loc[entered, "Entry"], mode="markers", name="Trade entry", marker={"symbol": "circle", "size": 9, "color": "#2563eb"}))
+            tp = trades["Outcome"] == "TP HIT"
+            sl = trades["Outcome"] == "SL HIT"
+            opened = trades["Outcome"] == "OPEN"
+            fig.add_trace(go.Scatter(x=trades.loc[tp, "Exit time"], y=trades.loc[tp, "Exit price"], mode="markers+text", text=["TP HIT"] * int(tp.sum()), textposition="top center", name="Take-profit hit", marker={"symbol": "star", "size": 14, "color": "#16a34a"}))
+            fig.add_trace(go.Scatter(x=trades.loc[sl, "Exit time"], y=trades.loc[sl, "Exit price"], mode="markers+text", text=["SL HIT"] * int(sl.sum()), textposition="bottom center", name="Stop-loss hit", marker={"symbol": "x", "size": 13, "color": "#dc2626"}))
+            fig.add_trace(go.Scatter(x=trades.loc[opened, "Entry time"], y=trades.loc[opened, "Entry"], mode="markers", name="Trade still open", marker={"symbol": "circle-open", "size": 12, "color": "#d97706"}))
+            if not trades.empty:
+                latest_trade = trades.iloc[-1]
+                for col, color, dash in [("Entry", "#2563eb", "solid"), ("Stop-loss", "#dc2626", "dash"), ("Take-profit", "#16a34a", "dash")]:
+                    fig.add_hline(y=float(latest_trade[col]), line_dash=dash, line_color=color, annotation_text=f"Latest {col}: {float(latest_trade[col]):,.4f}", annotation_position="right")
+    fig.update_layout(
+        height=620, xaxis_rangeslider_visible=False, hovermode="x unified",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0},
+        margin={"l": 10, "r": 20, "t": 50, "b": 10},
+    )
+    fig.update_yaxes(title_text="Price")
+    st.plotly_chart(fig, use_container_width=True)
 
     if strategy == "My strategy":
-        st.subheader("My strategy — latest setup")
-        recent_signals = data.loc[data["my_signal"] != 0, ["my_signal", "my_entry", "my_stop", "my_target", "my_ob_midpoint"]].tail(10).copy()
-        if recent_signals.empty:
-            st.info("No confirmed My strategy setup in the loaded candles. Try another pair, interval, or more candles.")
+        st.subheader("My strategy — projected trade levels and outcomes")
+        if trades.empty:
+            st.info("No confirmed setup produced a simulated trade in the loaded candles. Try another pair, interval, or more candles.")
         else:
-            recent_signals["Signal"] = recent_signals["my_signal"].map({1: "BUY", -1: "SELL"})
-            recent_signals = recent_signals[["Signal", "my_entry", "my_stop", "my_target", "my_ob_midpoint"]].rename(columns={
-                "my_entry": "Entry", "my_stop": "Stop-loss", "my_target": "Take-profit", "my_ob_midpoint": "HTF OB 50% midpoint"
-            })
-            st.dataframe(recent_signals.sort_index(ascending=False), use_container_width=True)
-        st.caption(f"Risk-to-reward selected: 1:{risk_reward}. Stop and target are calculated from the setup invalidation level. The current portfolio backtest does not yet simulate stop-loss/take-profit exits; treat its performance metrics as provisional, not as an RR-specific result.")
+            latest_trade = trades.iloc[-1]
+            p1, p2, p3, p4 = st.columns(4)
+            p1.metric("Latest trade", f"{latest_trade['Side']} / {latest_trade['Outcome']}")
+            p2.metric("Entry (projected)", f"{latest_trade['Entry']:,.4f}")
+            p3.metric("Stop-loss (projected)", f"{latest_trade['Stop-loss']:,.4f}")
+            p4.metric("Take-profit (projected)", f"{latest_trade['Take-profit']:,.4f}")
+            summary = trades.copy()
+            summary["Signal time"] = pd.to_datetime(summary["Signal time"], utc=True).dt.strftime("%Y-%m-%d %H:%M UTC")
+            summary["Entry time"] = pd.to_datetime(summary["Entry time"], utc=True).dt.strftime("%Y-%m-%d %H:%M UTC")
+            summary["Exit time"] = pd.to_datetime(summary["Exit time"], utc=True, errors="coerce").dt.strftime("%Y-%m-%d %H:%M UTC")
+            st.dataframe(summary.sort_values("Entry time", ascending=False), use_container_width=True, hide_index=True)
+            done = trades[trades["Outcome"].isin(["TP HIT", "SL HIT"])]
+            wins = int((done["Outcome"] == "TP HIT").sum())
+            losses = int((done["Outcome"] == "SL HIT").sum())
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Take-profits hit", wins)
+            m2.metric("Stop-losses hit", losses)
+            m3.metric("Closed trades", len(done))
+            m4.metric("Win rate", f"{wins / len(done) * 100:.1f}%" if len(done) else "—")
+        st.caption(f"Risk-to-reward selected: 1:{risk_reward}. Entries are simulated at the next candle open after a confirmed signal. If TP and SL are both inside the same candle, SL is assumed first as a conservative rule. OPEN trades have not hit either level yet. These are OHLC-based simulations, not actual executed trades.")
     else:
         st.subheader("MACD")
         st.line_chart(data[["macd", "macd_signal"]].rename(
