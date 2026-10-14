@@ -3,3 +3,5 @@ ccxt>=4.4
 pandas>=2.0
 numpy>=1.26
 plotly>=5.24
+openai>=1.40
+feedparser>=6.0
