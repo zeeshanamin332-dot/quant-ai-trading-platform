@@ -171,3 +171,85 @@ def add_my_strategy(
             active = float(signal)
         data.iloc[i, data.columns.get_loc("my_position")] = active
     return data
+
+
+
+def simulate_my_trades(candles: pd.DataFrame) -> pd.DataFrame:
+    """Simulate non-overlapping trades from strategy signals using candle OHLC.
+
+    Signals are known only after their candle closes, so entries use the next
+    candle's open. If TP and SL are both inside one candle's range, assume SL
+    first (conservative because OHLC data does not reveal intrabar ordering).
+    """
+    columns = [
+        "Signal time", "Entry time", "Exit time", "Side", "Entry",
+        "Stop-loss", "Take-profit", "Outcome", "Exit price", "P/L %",
+        "R multiple", "Bars held",
+    ]
+    if candles.empty or "my_signal" not in candles:
+        return pd.DataFrame(columns=columns)
+
+    trades = []
+    i = 0
+    while i < len(candles) - 1:
+        signal = int(candles["my_signal"].iloc[i])
+        if signal == 0:
+            i += 1
+            continue
+
+        entry_i = i + 1
+        entry = float(candles["open"].iloc[entry_i])
+        stop = float(candles["my_stop"].iloc[i])
+        target = float(candles["my_target"].iloc[i])
+        if not np.isfinite([entry, stop, target]).all():
+            i += 1
+            continue
+        risk = entry - stop if signal > 0 else stop - entry
+        if risk <= 0:
+            i += 1
+            continue
+        # Keep the risk distance from the signal's projected levels, but anchor
+        # the actual trade levels to the next candle open to avoid lookahead.
+        reward_multiple = abs(float(candles["my_target"].iloc[i]) - float(candles["my_entry"].iloc[i])) / max(
+            abs(float(candles["my_entry"].iloc[i]) - float(candles["my_stop"].iloc[i])), 1e-12
+        )
+        stop = entry - risk if signal > 0 else entry + risk
+        target = entry + risk * reward_multiple if signal > 0 else entry - risk * reward_multiple
+
+        outcome = "OPEN"
+        exit_price = float(candles["close"].iloc[-1])
+        exit_i = len(candles) - 1
+        for j in range(entry_i, len(candles)):
+            high = float(candles["high"].iloc[j])
+            low = float(candles["low"].iloc[j])
+            if signal > 0:
+                sl_hit, tp_hit = low <= stop, high >= target
+            else:
+                sl_hit, tp_hit = high >= stop, low <= target
+            if sl_hit:
+                outcome, exit_price, exit_i = "SL HIT", stop, j
+                break
+            if tp_hit:
+                outcome, exit_price, exit_i = "TP HIT", target, j
+                break
+
+        pnl_pct = ((exit_price - entry) / entry * 100) * signal
+        r_multiple = ((exit_price - entry) * signal) / risk
+        trades.append({
+            "Signal time": candles.index[i],
+            "Entry time": candles.index[entry_i],
+            "Exit time": candles.index[exit_i] if outcome != "OPEN" else pd.NaT,
+            "Side": "BUY" if signal > 0 else "SELL",
+            "Entry": entry,
+            "Stop-loss": stop,
+            "Take-profit": target,
+            "Outcome": outcome,
+            "Exit price": exit_price if outcome != "OPEN" else np.nan,
+            "P/L %": pnl_pct if outcome != "OPEN" else np.nan,
+            "R multiple": r_multiple if outcome != "OPEN" else np.nan,
+            "Bars held": exit_i - entry_i,
+        })
+        # Do not overlap simulated positions. Continue after the exit candle.
+        i = max(exit_i + 1, i + 1)
+
+    return pd.DataFrame(trades, columns=columns)
