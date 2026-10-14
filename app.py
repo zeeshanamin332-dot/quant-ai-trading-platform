@@ -5,6 +5,7 @@ import ccxt
 import plotly.graph_objects as go
 from backtest import run_backtest
 from my_strategy import add_my_strategy, simulate_my_trades
+from agents import ask_ai_agent, fetch_crypto_news, trades_to_context
 
 st.set_page_config(
     page_title="Quant AI Trading Platform",
@@ -100,7 +101,7 @@ with st.sidebar:
     st.header("Settings")
     symbol = st.selectbox("Crypto pair", ["BTC/USD", "ETH/USD", "SOL/USD", "BTC/USDT", "ETH/USDT"])
     timeframe = st.selectbox("Candle interval", ["1h", "4h", "1d"])
-    limit = st.slider("Number of candles", min_value=100, max_value=720, value=500, step=100)
+    limit = st.slider("Number of candles", min_value=100, max_value=5000, value=1000, step=100)
     fee_pct = st.number_input("Estimated fee per unit of turnover (%)", min_value=0.0, max_value=2.0, value=0.1, step=0.05)
     strategy = st.selectbox("Strategy to review", ["MACD crossover", "Bollinger Bands", "My strategy"])
     if strategy == "My strategy":
@@ -196,7 +197,7 @@ try:
         margin={"l": 10, "r": 20, "t": 50, "b": 10},
     )
     fig.update_yaxes(title_text="Price")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True, "modeBarButtonsToAdd": ["drawline", "drawrect", "eraseshape"]})
 
     if strategy == "My strategy":
         st.subheader("My strategy — projected trade levels and outcomes")
@@ -254,6 +255,67 @@ try:
         "slippage, funding, spread, and real order execution are not modeled. The Bollinger rule is a simple "
         "one-candle event exposure and should be refined before strategy comparison."
     )
+
+    st.divider()
+    st.header("AI research agents")
+    st.caption("AI analysis requires your own OpenAI API key in Streamlit Cloud Secrets as OPENAI_API_KEY. News uses public RSS headlines.")
+    agent_tabs = st.tabs(["Crypto news", "Trade review", "Strategy limitations", "Ask a question"])
+
+    with agent_tabs[0]:
+        if st.button("Refresh crypto news", key="refresh_news"):
+            st.session_state["crypto_news"] = fetch_crypto_news(20)
+        if "crypto_news" not in st.session_state:
+            st.session_state["crypto_news"] = fetch_crypto_news(20)
+        for item in st.session_state["crypto_news"]:
+            st.markdown("**[" + item["Headline"] + "](" + item["URL"] + ")**")
+            st.caption(item["Publisher"] + " · " + item["Published"])
+            if item["Summary"]:
+                st.write(item["Summary"])
+            st.divider()
+
+    with agent_tabs[1]:
+        if st.button("Analyze recent trades", key="analyze_trade"):
+            try:
+                with st.spinner("Reviewing trade outcomes…"):
+                    st.session_state["trade_review"] = ask_ai_agent(
+                        "You are a cautious trade-review agent. Explain observable price action before TP/SL outcomes and possible reasons for near misses. Clearly separate facts from hypotheses; OHLC candles cannot prove exact intrabar order or causation.",
+                        "Analyze the simulated trades. Explain TP hits, SL hits, open trades, and close calls. Identify missing evidence.",
+                        trades_to_context(trades, data, strategy),
+                    )
+            except Exception as exc:
+                st.session_state["trade_review"] = str(exc)
+        if st.session_state.get("trade_review"):
+            st.write(st.session_state["trade_review"])
+
+    with agent_tabs[2]:
+        if st.button("Review strategy limitations", key="analyze_limits"):
+            try:
+                with st.spinner("Reviewing assumptions and shortcomings…"):
+                    st.session_state["strategy_limits"] = ask_ai_agent(
+                        "You are a skeptical quant reviewer. Identify implementation weaknesses, overfitting risks, missing costs, data limitations, and validation tests. Never invent performance results.",
+                        "List the most important shortcomings and a prioritized test plan.",
+                        trades_to_context(trades, data, strategy),
+                    )
+            except Exception as exc:
+                st.session_state["strategy_limits"] = str(exc)
+        if st.session_state.get("strategy_limits"):
+            st.write(st.session_state["strategy_limits"])
+
+    with agent_tabs[3]:
+        question = st.text_area("Ask about the signals, trades, or strategy", key="agent_question")
+        if st.button("Ask AI assistant", key="ask_ai") and question.strip():
+            try:
+                with st.spinner("Preparing an answer…"):
+                    st.session_state["agent_answer"] = ask_ai_agent(
+                        "You are a plain-language Q&A assistant for a crypto research dashboard. Ground answers in supplied data and state uncertainty. Do not provide guaranteed predictions.",
+                        question,
+                        trades_to_context(trades, data, strategy),
+                    )
+            except Exception as exc:
+                st.session_state["agent_answer"] = str(exc)
+        if st.session_state.get("agent_answer"):
+            st.write(st.session_state["agent_answer"])
+
 except Exception as exc:
     st.error("Could not load or analyze market data.")
     st.info("Check your internet connection, try another pair/interval, or refresh the app. The exchange may temporarily limit requests.")
