@@ -3,6 +3,7 @@ import pandas as pd
 import streamlit as st
 import ccxt
 from backtest import run_backtest
+from my_strategy import add_my_strategy
 
 st.set_page_config(
     page_title="Quant AI Trading Platform",
@@ -11,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("📈 Quant AI Trading Platform")
-st.caption("Crypto research dashboard • Historical candles • MACD • Bollinger Bands • Backtesting")
+st.caption("Crypto research dashboard • MACD • Bollinger Bands • Liquidity sweeps • Backtesting")
 st.warning(
     "Research only — this app does not place trades. Backtests are simulations, "
     "and past performance does not predict future results."
@@ -33,7 +34,7 @@ def fetch_candles(symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
 
     # Kraken can include the currently forming candle. Exclude it until its
     # full interval has elapsed so signals use completed candles only.
-    timeframe_seconds = {"1h": 3600, "4h": 4 * 3600, "1d": 24 * 3600}
+    timeframe_seconds = {"15m": 900, "1h": 3600, "4h": 4 * 3600, "1d": 24 * 3600}
     if timeframe not in timeframe_seconds:
         raise ValueError(f"Unsupported candle interval: {timeframe}")
     if not df.empty:
@@ -100,7 +101,12 @@ with st.sidebar:
     timeframe = st.selectbox("Candle interval", ["1h", "4h", "1d"])
     limit = st.slider("Number of candles", min_value=100, max_value=720, value=500, step=100)
     fee_pct = st.number_input("Estimated fee per unit of turnover (%)", min_value=0.0, max_value=2.0, value=0.1, step=0.05)
-    strategy = st.selectbox("Strategy to review", ["MACD crossover", "Bollinger Bands"])
+    strategy = st.selectbox("Strategy to review", ["MACD crossover", "Bollinger Bands", "My strategy"])
+    if strategy == "My strategy":
+        higher_timeframe = st.selectbox("Order-block timeframe", ["15m", "1h", "4h", "1d"], index={"1h": 2, "4h": 3, "1d": 3}[timeframe], help="Choose an interval above the chart interval where possible. The app has no interval above 1d.")
+        risk_reward_label = st.selectbox("Risk-to-reward", ["1:1", "1:2"], index=1)
+        risk_reward = int(risk_reward_label.split(":")[1])
+        swing_lookback = st.slider("Swing liquidity lookback", min_value=5, max_value=30, value=10, step=1)
     refresh = st.button("🔄 Refresh market data", use_container_width=True)
 
 if refresh:
@@ -113,7 +119,17 @@ try:
         candles = fetch_candles(symbol, timeframe, limit)
     data = add_indicators(candles)
     fee_rate = fee_pct / 100.0
-    pos_col = "macd_position" if strategy == "MACD crossover" else "bb_position"
+    if strategy == "My strategy":
+        with st.spinner(f"Checking {higher_timeframe} order blocks and liquidity sweeps…"):
+            htf_candles = fetch_candles(symbol, higher_timeframe, min(max(limit, 100), 720))
+        data = add_my_strategy(
+            data, htf_candles, swing_lookback=swing_lookback,
+            risk_reward=risk_reward, base_timeframe=timeframe,
+            higher_timeframe_name=higher_timeframe,
+        )
+        pos_col = "my_position"
+    else:
+        pos_col = "macd_position" if strategy == "MACD crossover" else "bb_position"
     results, metrics = run_backtest(data, pos_col, fee_rate, bars_per_year)
 
     latest = data.iloc[-1]
@@ -128,8 +144,10 @@ try:
             state = "SHORT"
         else:
             state = "NO POSITION"
-    else:
+    elif strategy == "Bollinger Bands":
         state = "LONG EVENT" if latest["bb_event"] > 0 else ("SHORT EVENT" if latest["bb_event"] < 0 else "NO NEW SIGNAL")
+    else:
+        state = "BUY" if latest["my_signal"] > 0 else ("SELL" if latest["my_signal"] < 0 else "NO NEW SIGNAL")
     c4.metric("Latest signal", state)
     st.caption(
         "Latest completed candle opened at "
@@ -141,12 +159,28 @@ try:
     price_chart = data[["close", "bb_mid", "bb_upper", "bb_lower"]].rename(
         columns={"close": "Close", "bb_mid": "BB middle", "bb_upper": "BB upper", "bb_lower": "BB lower"}
     )
+    if strategy == "My strategy":
+        price_chart["BUY signal"] = data["low"].where(data["my_signal"] > 0)
+        price_chart["SELL signal"] = data["high"].where(data["my_signal"] < 0)
     st.line_chart(price_chart, height=350)
 
-    st.subheader("MACD")
-    st.line_chart(data[["macd", "macd_signal"]].rename(
-        columns={"macd": "MACD", "macd_signal": "Signal line"}
-    ), height=220)
+    if strategy == "My strategy":
+        st.subheader("My strategy — latest setup")
+        recent_signals = data.loc[data["my_signal"] != 0, ["my_signal", "my_entry", "my_stop", "my_target", "my_ob_midpoint"]].tail(10).copy()
+        if recent_signals.empty:
+            st.info("No confirmed My strategy setup in the loaded candles. Try another pair, interval, or more candles.")
+        else:
+            recent_signals["Signal"] = recent_signals["my_signal"].map({1: "BUY", -1: "SELL"})
+            recent_signals = recent_signals[["Signal", "my_entry", "my_stop", "my_target", "my_ob_midpoint"]].rename(columns={
+                "my_entry": "Entry", "my_stop": "Stop-loss", "my_target": "Take-profit", "my_ob_midpoint": "HTF OB 50% midpoint"
+            })
+            st.dataframe(recent_signals.sort_index(ascending=False), use_container_width=True)
+        st.caption(f"Risk-to-reward selected: 1:{risk_reward}. Stop and target are calculated from the setup invalidation level. The current portfolio backtest does not yet simulate stop-loss/take-profit exits; treat its performance metrics as provisional, not as an RR-specific result.")
+    else:
+        st.subheader("MACD")
+        st.line_chart(data[["macd", "macd_signal"]].rename(
+            columns={"macd": "MACD", "macd_signal": "Signal line"}
+        ), height=220)
 
     st.subheader("Backtest results")
     metric_cols = st.columns(3)
@@ -166,6 +200,8 @@ try:
         file_name=f"{symbol.replace('/', '_').lower()}_{timeframe}_backtest.csv",
         mime="text/csv",
     )
+    if strategy == "My strategy":
+        st.caption("My strategy uses mechanical approximations: swing sweeps, wick/body rejection, a second sweep, displacement through a prior opposite-colour candle, and a completed higher-timeframe order-block midpoint. Signals may differ from discretionary chart reading. No trades are placed.")
     st.caption(
         "Model assumptions: signal is applied on the next candle; fee is approximated from changes in exposure; "
         "slippage, funding, spread, and real order execution are not modeled. The Bollinger rule is a simple "
