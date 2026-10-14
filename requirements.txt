@@ -2,3 +2,4 @@ streamlit>=1.40
 ccxt>=4.4
 pandas>=2.0
 numpy>=1.26
+plotly>=5.24
