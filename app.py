@@ -29,8 +29,30 @@ def fetch_candles(symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     df = df.drop_duplicates("timestamp").sort_values("timestamp").set_index("timestamp")
     df = df.astype(float)
+
+    # Kraken can include the currently forming candle. Exclude it until its
+    # full interval has elapsed so signals use completed candles only.
+    timeframe_seconds = {"1h": 3600, "4h": 4 * 3600, "1d": 24 * 3600}
+    if timeframe not in timeframe_seconds:
+        raise ValueError(f"Unsupported candle interval: {timeframe}")
+    if not df.empty:
+        last_candle_open = df.index[-1]
+        candle_close_time = last_candle_open + pd.Timedelta(
+            seconds=timeframe_seconds[timeframe]
+        )
+        if candle_close_time > pd.Timestamp.now(tz="UTC"):
+            df = df.iloc[:-1]
+
     if df.empty or (df["close"] <= 0).any():
-        raise ValueError("The candle data was empty or invalid.")
+        raise ValueError("No completed, valid candles were returned.")
+    if not np.isfinite(df[["open", "high", "low", "close", "volume"]].to_numpy()).all():
+        raise ValueError("The candle data contains non-finite values.")
+    if (df["high"] < df["low"]).any():
+        raise ValueError("The candle data contains a high price below its low.")
+    if (df["high"] < df[["open", "close"]].max(axis=1)).any():
+        raise ValueError("The candle data contains a high below the open or close.")
+    if (df["low"] > df[["open", "close"]].min(axis=1)).any():
+        raise ValueError("The candle data contains a low above the open or close.")
     return df
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -126,10 +148,20 @@ try:
     c2.metric("Candles loaded", f"{len(data):,}")
     c3.metric("Strategy", strategy)
     if strategy == "MACD crossover":
-        state = "LONG" if latest["macd_position"] > 0 else "SHORT / EXIT"
+        if latest["macd_position"] > 0:
+            state = "LONG"
+        elif latest["macd_position"] < 0:
+            state = "SHORT"
+        else:
+            state = "NO POSITION"
     else:
         state = "LONG EVENT" if latest["bb_event"] > 0 else ("SHORT EVENT" if latest["bb_event"] < 0 else "NO NEW SIGNAL")
     c4.metric("Latest signal", state)
+    st.caption(
+        "Latest completed candle opened at "
+        f"{data.index[-1].strftime('%Y-%m-%d %H:%M UTC')}. "
+        "The currently forming candle is excluded from indicators and backtesting."
+    )
 
     st.subheader("Price and indicators")
     price_chart = data[["close", "bb_mid", "bb_upper", "bb_lower"]].rename(
