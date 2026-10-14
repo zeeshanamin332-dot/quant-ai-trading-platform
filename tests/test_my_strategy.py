@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from my_strategy import add_my_strategy
+from my_strategy import add_my_strategy, simulate_my_trades
 
 
 def make_candles(n=50):
@@ -34,3 +34,41 @@ def test_rejects_invalid_risk_reward():
 def test_rejects_short_swing_lookback():
     with pytest.raises(ValueError):
         add_my_strategy(make_candles(), make_candles(80), swing_lookback=2)
+
+
+
+def test_trade_simulator_records_take_profit_and_projected_levels():
+    candles = make_candles(3)
+    candles["my_signal"] = 0
+    candles["my_entry"] = np.nan
+    candles["my_stop"] = np.nan
+    candles["my_target"] = np.nan
+    candles.iloc[0, candles.columns.get_loc("my_signal")] = 1
+    candles.iloc[0, candles.columns.get_loc("my_entry")] = 100.0
+    candles.iloc[0, candles.columns.get_loc("my_stop")] = 95.0
+    candles.iloc[0, candles.columns.get_loc("my_target")] = 110.0
+    candles.iloc[1, candles.columns.get_loc("open")] = 101.0
+    candles.iloc[1, candles.columns.get_loc("high")] = 114.0
+    candles.iloc[1, candles.columns.get_loc("low")] = 100.0
+    trades = simulate_my_trades(candles)
+    assert len(trades) == 1
+    assert trades.iloc[0]["Outcome"] == "TP HIT"
+    assert trades.iloc[0]["Entry"] == 101.0
+    assert trades.iloc[0]["Take-profit"] == 113.0
+
+
+def test_trade_simulator_assumes_stop_first_if_both_levels_hit():
+    candles = make_candles(3)
+    candles["my_signal"] = 0
+    candles["my_entry"] = np.nan
+    candles["my_stop"] = np.nan
+    candles["my_target"] = np.nan
+    candles.iloc[0, candles.columns.get_loc("my_signal")] = 1
+    candles.iloc[0, candles.columns.get_loc("my_entry")] = 100.0
+    candles.iloc[0, candles.columns.get_loc("my_stop")] = 95.0
+    candles.iloc[0, candles.columns.get_loc("my_target")] = 110.0
+    candles.iloc[1, candles.columns.get_loc("open")] = 100.0
+    candles.iloc[1, candles.columns.get_loc("high")] = 111.0
+    candles.iloc[1, candles.columns.get_loc("low")] = 94.0
+    trades = simulate_my_trades(candles)
+    assert trades.iloc[0]["Outcome"] == "SL HIT"
